@@ -74,7 +74,7 @@ terraform init
 
 ---
 
-### 3. Apply Infrastructure
+### 3. Apply Infrastructure.
 
 ```bash
 terraform plan
