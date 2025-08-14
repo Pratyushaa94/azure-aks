@@ -1,4 +1,4 @@
-name: Terraform AKS Deployment
+name: Terraform AKS + ArgoCD Installation
 
 on:
   push:
@@ -14,29 +14,54 @@ env:
   ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
   ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
   ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+  RESOURCE_GROUP: aks-rg
+  CLUSTER_NAME: myakscluster
 
 jobs:
   terraform:
-    name: Terraform Apply
+    name: Deploy AKS and Install ArgoCD
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      # Checkout repo
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Set up Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.6.6
+      # Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
 
-    - name: Terraform Init
-      run: terraform init -backend-config="backend.conf"
+      # Terraform init, validate, plan, apply
+      - name: Terraform Init
+        run: terraform init -backend-config="backend.conf"
 
-    - name: Terraform Validate
-      run: terraform validate
+      - name: Terraform Validate
+        run: terraform validate
 
-    - name: Terraform Plan
-      run: terraform plan -var-file="terraform.tfvars"
+      - name: Terraform Plan
+        run: terraform plan -var-file="terraform.tfvars"
 
-    - name: Terraform Apply
-      run: terraform apply -auto-approve -var-file="terraform.tfvars"
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -var-file="terraform.tfvars"
+
+      - name: Get AKS Credentials
+        run: |
+             az aks get-credentials \
+             --resource-group aks-dev-rg \
+              --name myAKSCluster \
+               --overwrite-existing
+
+
+      # Install Argo CD
+      - name: Install ArgoCD
+        run: |
+          kubectl create namespace argocd || true
+          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+      # Expose ArgoCD (optional - for quick testing via LoadBalancer)
+      - name: Expose ArgoCD Server
+        run: |
+          kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+          echo "Wait a few mins, then run: kubectl get svc -n argocd"
