@@ -14,8 +14,8 @@ env:
   ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
   ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
   ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-  RESOURCE_GROUP: aks-rg
-  CLUSTER_NAME: myakscluster
+  RESOURCE_GROUP: aks-dev-rg
+  CLUSTER_NAME: myAKSCluster
 
 jobs:
   terraform:
@@ -46,15 +46,27 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve -var-file="terraform.tfvars"
 
+      # Login to Azure CLI (needed for az aks get-credentials)
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.ARM_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.ARM_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.ARM_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.ARM_TENANT_ID }}"
+            }
+
+      # Get AKS Credentials
       - name: Get AKS Credentials
         run: |
-             az aks get-credentials \
-             --resource-group aks-dev-rg \
-              --name myAKSCluster \
-               --overwrite-existing
+          az aks get-credentials \
+            --resource-group $RESOURCE_GROUP \
+            --name $CLUSTER_NAME \
+            --overwrite-existing
 
-
-      # Install Argo CD
+      # Install ArgoCD
       - name: Install ArgoCD
         run: |
           kubectl create namespace argocd || true
