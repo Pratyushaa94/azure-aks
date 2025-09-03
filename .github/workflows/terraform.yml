@@ -23,6 +23,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # Login to Azure (Client Secret method) - must come before Terraform init
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       # Setup Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -41,12 +47,6 @@ jobs:
 
       - name: Terraform Apply
         run: terraform apply -auto-approve -var-file="terraform.tfvars"
-
-      # Login to Azure (Client Secret method)
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       # Install dependencies
       - name: Install CLI Tools
@@ -69,7 +69,7 @@ jobs:
           kubectl create namespace argocd || true
           kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-      # Expose ArgoCD (optional)
+      # Expose ArgoCD Server (optional)
       - name: Expose ArgoCD Server
         run: |
           kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
