@@ -1,4 +1,4 @@
-name: Terraform AKS + ArgoCD + Helm Deployment
+name: Terraform AKS + ArgoCD + Helm Deployment.
 
 on:
   push:
