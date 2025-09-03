@@ -37,18 +37,17 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.6.6
-
-- name: Terraform Init
-  run: |
-    terraform init \
-      -backend-config="resource_group_name=my-rg" \
-      -backend-config="storage_account_name=thisstgformconsole" \
-      -backend-config="container_name=tfstate" \
-      -backend-config="key=aks-cluster.terraform.tfstate" \
-      -backend-config="subscription_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}" \
-      -backend-config="client_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}" \
-      -backend-config="client_secret=${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}" \
-      -backend-config="tenant_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}"
+      - name: Terraform Init
+        run: |
+            terraform init \
+                    -backend-config="resource_group_name=my-rg" \
+                   -backend-config="storage_account_name=thisstgformconsole" \
+                    -backend-config="container_name=tfstate" \
+                    -backend-config="key=aks-cluster.terraform.tfstate" \
+                  -backend-config="subscription_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}" \
+                   -backend-config="client_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}" \
+                    -backend-config="client_secret=${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}" \
+                     -backend-config="tenant_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}"
 
       # 5️⃣ Terraform Validate, Plan, Apply
       - name: Terraform Validate
