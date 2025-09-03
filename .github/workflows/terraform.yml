@@ -1,4 +1,4 @@
-name: Terraform AKS + ArgoCD Installation
+name: Terraform AKS + ArgoCD + Helm Deployment
 
 on:
   push:
@@ -12,33 +12,46 @@ permissions:
 env:
   RESOURCE_GROUP: aks-dev-rg
   CLUSTER_NAME: myAKSCluster
+  HELM_CHART_REPO: https://charts.bitnami.com/bitnami
+  APP_NAMESPACE: my-app
+  APP_RELEASE_NAME: my-sample-app
 
 jobs:
-  terraform:
-    name: Deploy AKS and Install ArgoCD
+  terraform-deploy:
+    name: Deploy AKS, ArgoCD, and Helm App
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout repo
+      # 1️⃣ Checkout repo
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Login to Azure (Client Secret method) - must come before Terraform init
+      # 2️⃣ Azure Login
       - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Setup Terraform
+      # 3️⃣ Setup Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.6.6
 
-      # Terraform init, validate, plan, apply
+      # 4️⃣ Terraform Init (SP backend auth)
       - name: Terraform Init
-        run: terraform init -backend-config="backend.conf"
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=my-rg" \
+            -backend-config="storage_account_name=formconsole12345" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=aks-cluster.terraform.tfstate" \
+            -backend-config="subscription_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}" \
+            -backend-config="client_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}" \
+            -backend-config="client_secret=${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}" \
+            -backend-config="tenant_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}"
 
+      # 5️⃣ Terraform Validate, Plan, Apply
       - name: Terraform Validate
         run: terraform validate
 
@@ -48,14 +61,14 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve -var-file="terraform.tfvars"
 
-      # Install dependencies
+      # 6️⃣ Install CLI tools: kubectl, helm, jq
       - name: Install CLI Tools
         run: |
           sudo az aks install-cli
-          sudo curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           sudo apt-get update && sudo apt-get install -y jq
 
-      # Get AKS Credentials
+      # 7️⃣ Get AKS Credentials
       - name: Get AKS Credentials
         run: |
           az aks get-credentials \
@@ -63,13 +76,54 @@ jobs:
             --name $CLUSTER_NAME \
             --overwrite-existing
 
-      # Install ArgoCD
+      # 8️⃣ Install ArgoCD
       - name: Install ArgoCD
         run: |
           kubectl create namespace argocd || true
           kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-      # Expose ArgoCD Server (optional)
+      # 9️⃣ Expose ArgoCD Server (LoadBalancer)
       - name: Expose ArgoCD Server
         run: |
           kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+
+      # 🔟 Create App Namespace
+      - name: Create App Namespace
+        run: kubectl create namespace $APP_NAMESPACE || true
+
+      # 1️⃣1️⃣ Add Helm repo
+      - name: Add Helm Repo
+        run: helm repo add bitnami $HELM_CHART_REPO && helm repo update
+
+      # 1️⃣2️⃣ Deploy sample Helm app
+      - name: Deploy Helm App
+        run: |
+          helm upgrade --install $APP_RELEASE_NAME bitnami/nginx \
+            --namespace $APP_NAMESPACE \
+            --set service.type=LoadBalancer
+
+      # 1️⃣3️⃣ Optional: Deploy via ArgoCD app manifest
+      - name: Create ArgoCD App for Helm Chart
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: argoproj.io/v1alpha1
+          kind: Application
+          metadata:
+            name: helm-nginx-app
+            namespace: argocd
+          spec:
+            project: default
+            source:
+              repoURL: $HELM_CHART_REPO
+              chart: nginx
+              targetRevision: latest
+              helm:
+                releaseName: nginx-argo
+            destination:
+              server: https://kubernetes.default.svc
+              namespace: $APP_NAMESPACE
+            syncPolicy:
+              automated:
+                prune: true
+                selfHeal: true
+          EOF
