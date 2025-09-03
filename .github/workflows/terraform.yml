@@ -1,90 +1,75 @@
-name: AKS Infra + Components
+name: Terraform AKS + ArgoCD Installation
 
 on:
   push:
     branches:
       - main
-  pull_request:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: aks-dev-rg
+  CLUSTER_NAME: myAKSCluster
 
 jobs:
   terraform:
+    name: Deploy AKS and Install ArgoCD
     runs-on: ubuntu-latest
 
-    env:
-      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
-      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-
     steps:
+      # Checkout repo
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v2
-
-      - name: Log in to Azure
-        uses: azure/login@v2
+      # Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
-          client-id: ${{ secrets.ARM_CLIENT_ID }}
-          tenant-id: ${{ secrets.ARM_TENANT_ID }}
-          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-          client-secret: ${{ secrets.ARM_CLIENT_SECRET }}
+          terraform_version: 1.6.6
 
-      # Create backend infra (storage + container)
-      - name: Ensure Terraform backend infra exists
-        run: |
-          az group create --name my-rg --location eastus
-          az storage account create \
-            --name formconsole12345 \
-            --resource-group my-rg \
-            --sku Standard_LRS \
-            --encryption-services blob || true
-          az storage container create \
-            --name tfstate \
-            --account-name formconsole12345 || true
-
-      # Init with backend.conf
+      # Terraform init, validate, plan, apply
       - name: Terraform Init
-        run: terraform init -backend-config=backend.conf
+        run: terraform init -backend-config="backend.conf"
 
       - name: Terraform Validate
         run: terraform validate
 
       - name: Terraform Plan
-        run: terraform plan -out=tfplan
+        run: terraform plan -var-file="terraform.tfvars"
 
       - name: Terraform Apply
-        if: github.ref == 'refs/heads/main'
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -auto-approve -var-file="terraform.tfvars"
 
-      # ✅ Install tools
-      - name: Install kubectl, Helm, jq
+      # Login to Azure (Client Secret method)
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Install dependencies
+      - name: Install CLI Tools
         run: |
           sudo az aks install-cli
-          curl -fsSL https://get.helm.sh/helm-v3.15.2-linux-amd64.tar.gz | tar -xz
-          sudo mv linux-amd64/helm /usr/local/bin/helm
-          sudo apt-get install -y jq
+          sudo curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          sudo apt-get update && sudo apt-get install -y jq
 
-      # ✅ Get AKS credentials after Terraform apply
+      # Get AKS Credentials
       - name: Get AKS Credentials
         run: |
-          CLUSTER_NAME=$(terraform output -raw aks_cluster_name)
-          RG_NAME=$(terraform output -raw resource_group_name)
-          az aks get-credentials --resource-group $RG_NAME --name $CLUSTER_NAME --overwrite-existing
+          az aks get-credentials \
+            --resource-group $RESOURCE_GROUP \
+            --name $CLUSTER_NAME \
+            --overwrite-existing
 
-      # ✅ Test kubectl
-      - name: Verify kubectl
-        run: kubectl get nodes
-
-      # ✅ Example: Install NGINX ingress controller with Helm
-      - name: Install Ingress Controller
+      # Install ArgoCD
+      - name: Install ArgoCD
         run: |
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo update
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            --namespace ingress-nginx --create-namespace
+          kubectl create namespace argocd || true
+          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-      # ✅ Example: Verify pods
-      - name: Verify Ingress Pods
-        run: kubectl get pods -n ingress-nginx
+      # Expose ArgoCD (optional)
+      - name: Expose ArgoCD Server
+        run: |
+          kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
