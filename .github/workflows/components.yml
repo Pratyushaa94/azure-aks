@@ -1,7 +1,10 @@
 name: Bastion Bootstrap & AKS Connect
 
 on:
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["Terraform Infrastructure"]   # Name of Terraform pipeline
+    types:
+      - completed
 
 env:
   RESOURCE_GROUP: dev-rg-aks
@@ -13,7 +16,8 @@ env:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest   # GitHub-hosted runner
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}   # Only run if Terraform succeeded
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
