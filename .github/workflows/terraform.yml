@@ -1,127 +1,81 @@
-name: Terraform AKS + ArgoCD + Helm Deployment.
+name: Deploy to AKS
 
 on:
   push:
     branches:
       - main
-
-permissions:
-  id-token: write
-  contents: read
+  workflow_dispatch:
 
 env:
-  RESOURCE_GROUP: aks-dev-rg
-  CLUSTER_NAME: myAKSCluster
-  HELM_CHART_REPO: https://charts.bitnami.com/bitnami
-  APP_NAMESPACE: my-app
-  APP_RELEASE_NAME: my-sample-app
+  RESOURCE_GROUP: dev-rg-aks
+  CLUSTER_NAME: dev-aks
+  TFSTATE_RG: tfstate-rg
+  TFSTATE_STORAGE: prathyusha2025tfstate
 
 jobs:
-  terraform-deploy:
-    name: Deploy AKS, ArgoCD, and Helm App
-    runs-on: ubuntu-latest
+  deploy:
+    runs-on: self-hosted   # your Bastion VM runner
 
     steps:
-      # 1️⃣ Checkout repo
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      # 2️⃣ Azure Login
+      # Install Azure CLI
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az version
+
+      # Install kubectl
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      # Install Terraform
+      - name: Install Terraform
+        run: |
+          curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt-get update && sudo apt-get install -y terraform
+          terraform -version
+
+      # Install Docker
+      - name: Install Docker
+        run: |
+          curl -fsSL https://get.docker.com | sh
+          sudo usermod -aG docker $USER
+          docker --version
+
+      # Azure Login using AZURE_CREDENTIALS secret
       - name: Azure Login
-        uses: azure/login@v2
+        uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 3️⃣ Setup Terraform
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.6.6
+      # Connect to AKS
+      - name: Connect to AKS
+        run: |
+          az aks get-credentials -n $CLUSTER_NAME -g $RESOURCE_GROUP --overwrite-existing
+          kubectl get nodes
+
+      # Terraform init (with remote backend)
       - name: Terraform Init
         run: |
-            terraform init \
-                    -backend-config="resource_group_name=my-rg" \
-                   -backend-config="storage_account_name=thisstgformconsole" \
-                    -backend-config="container_name=tfstate" \
-                    -backend-config="key=aks-cluster.terraform.tfstate" \
-                  -backend-config="subscription_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).subscriptionId }}" \
-                   -backend-config="client_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).clientId }}" \
-                    -backend-config="client_secret=${{ fromJSON(secrets.AZURE_CREDENTIALS).clientSecret }}" \
-                     -backend-config="tenant_id=${{ fromJSON(secrets.AZURE_CREDENTIALS).tenantId }}"
+          terraform init -backend-config="resource_group_name=$TFSTATE_RG" \
+                         -backend-config="storage_account_name=$TFSTATE_STORAGE" \
+                         -backend-config="container_name=tfstate" \
+                         -backend-config="key=infra.terraform.tfstate"
 
-      # 5️⃣ Terraform Validate, Plan, Apply
-      - name: Terraform Validate
-        run: terraform validate
+      # (Optional) Terraform Apply
+      # - name: Terraform Apply
+      #   run: terraform apply -auto-approve
 
-      - name: Terraform Plan
-        run: terraform plan -var-file="terraform.tfvars"
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve -var-file="terraform.tfvars"
-
-      # 6️⃣ Install CLI tools: kubectl, helm, jq
-      - name: Install CLI Tools
-        run: |
-          sudo az aks install-cli
-          curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          sudo apt-get update && sudo apt-get install -y jq
-
-      # 7️⃣ Get AKS Credentials
-      - name: Get AKS Credentials
-        run: |
-          az aks get-credentials \
-            --resource-group $RESOURCE_GROUP \
-            --name $CLUSTER_NAME \
-            --overwrite-existing
-
-      # 8️⃣ Install ArgoCD
-      - name: Install ArgoCD
-        run: |
-          kubectl create namespace argocd || true
-          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-
-      # 9️⃣ Expose ArgoCD Server (LoadBalancer)
-      - name: Expose ArgoCD Server
-        run: |
-          kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
-
-      # 🔟 Create App Namespace
-      - name: Create App Namespace
-        run: kubectl create namespace $APP_NAMESPACE || true
-
-      # 1️⃣1️⃣ Add Helm repo
-      - name: Add Helm Repo
-        run: helm repo add bitnami $HELM_CHART_REPO && helm repo update
-
-      # 1️⃣2️⃣ Deploy sample Helm app
-      - name: Deploy Helm App
-        run: |
-          helm upgrade --install $APP_RELEASE_NAME bitnami/nginx \
-            --namespace $APP_NAMESPACE \
-            --set service.type=LoadBalancer
-
-      # 1️⃣3️⃣ Optional: Deploy via ArgoCD app manifest
-      - name: Create ArgoCD App for Helm Chart
-        run: |
-          kubectl apply -f - <<EOF
-          apiVersion: argoproj.io/v1alpha1
-          kind: Application
-          metadata:
-            name: helm-nginx-app
-            namespace: argocd
-          spec:
-            project: default
-            source:
-              repoURL: $HELM_CHART_REPO
-              chart: nginx
-              targetRevision: latest
-              helm:
-                releaseName: nginx-argo
-            destination:
-              server: https://kubernetes.default.svc
-              namespace: $APP_NAMESPACE
-            syncPolicy:
-              automated:
-                prune: true
-                selfHeal: true
-          EOF
+      # (Optional) Helm / ArgoCD / Monitoring Deployment
+      # - name: Deploy Apps via Helm
+      #   run: |
+      #     helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+      #     helm repo update
+      #     helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -n monitoring
+      #     # Add your Helm app deployment here
