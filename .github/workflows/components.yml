@@ -1,0 +1,70 @@
+name: Bastion Bootstrap & AKS Connect
+
+on:
+  workflow_dispatch:
+
+env:
+  RESOURCE_GROUP: dev-rg-aks
+  CLUSTER_NAME: dev-aks
+  BASTION_HOST: ${{ secrets.BASTION_HOST }}
+  BASTION_USER: ${{ secrets.BASTION_USER }}
+  BASTION_KEY: ${{ secrets.BASTION_KEY }}
+  AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "$BASTION_KEY" > ~/.ssh/bastion.pem
+          chmod 600 ~/.ssh/bastion.pem
+          ssh-keyscan -H $BASTION_HOST >> ~/.ssh/known_hosts
+
+      - name: Verify bastion reachability
+        run: ssh -i ~/.ssh/bastion.pem -o StrictHostKeyChecking=yes $BASTION_USER@$BASTION_HOST 'echo Connected to $(hostname)'
+
+      - name: Install tools on bastion
+        run: |
+          ssh -i ~/.ssh/bastion.pem -o StrictHostKeyChecking=yes $BASTION_USER@$BASTION_HOST 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -y
+          if ! command -v jq >/dev/null 2>&1; then sudo apt-get install -y jq; fi
+          if ! command -v az >/dev/null 2>&1; then curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash; fi
+          if ! command -v kubectl >/dev/null 2>&1; then
+            KVER=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
+            curl -LO "https://dl.k8s.io/release/${KVER}/bin/linux/amd64/kubectl"
+            sudo install -m 0755 kubectl /usr/local/bin/kubectl
+            rm -f kubectl
+          fi
+          if ! command -v helm >/dev/null 2>&1; then curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash; fi
+          echo "\nVersions on $(hostname):"
+          az version | jq '{azure_cli:."azure-cli"}' || true
+          kubectl version --client=true --output=yaml || true
+          helm version || true
+          jq --version || true
+          REMOTE
+
+      - name: Azure login on bastion
+        run: |
+          ssh -i ~/.ssh/bastion.pem -o StrictHostKeyChecking=yes $BASTION_USER@$BASTION_HOST 'bash -s' <<REMOTE
+          set -euo pipefail
+          echo "$AZURE_CREDENTIALS" > creds.json
+          CLIENT_ID=$(jq -r .clientId creds.json)
+          CLIENT_SECRET=$(jq -r .clientSecret creds.json)
+          TENANT_ID=$(jq -r .tenantId creds.json)
+          SUBSCRIPTION_ID=$(jq -r .subscriptionId creds.json)
+          az logout || true
+          az login --service-principal --username "$CLIENT_ID" --password "$CLIENT_SECRET" --tenant "$TENANT_ID" >/dev/null
+          az account set --subscription "$SUBSCRIPTION_ID"
+          echo Logged in as: $(az account show --query user.name -o tsv)
+          REMOTE
+
+      - name: Connect to AKS
+        run: ssh -i ~/.ssh/bastion.pem -o StrictHostKeyChecking=yes $BASTION_USER@$BASTION_HOST "az aks get-credentials -n $CLUSTER_NAME -g $RESOURCE_GROUP --overwrite-existing && kubectl get nodes"
